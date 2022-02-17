@@ -1,17 +1,25 @@
+package com.alquimidia;
+
+import java.util.HashMap;
+
+import com.alquimidia.easyInner.entity.Inner;
 import com.topdata.EasyInner;
 
 public class Init {
-		
+
 	static boolean parar = false;
+	private static HashMap<Integer, Integer> ListaInners;
 
 	public static void main(String[] args) throws InterruptedException {
 		String arch = System.getProperty("sun.arch.data.model");
-		
+		ListaInners = new HashMap<Integer, Integer>();
+
 		if (arch.equalsIgnoreCase("32")) {
 			startMachine();
+			ListaInners.put(1, 1);
 		} else {
 			System.err.println("\nThis project only works on x86");
-		}	
+		}
 	}
 
 	private static void startMachine() throws InterruptedException {
@@ -27,15 +35,9 @@ public class Init {
 		}
 	}
 
-	
-	private static void machine() throws InterruptedException{
-		//EasyInner.ConfigurarInnerOffLine();
-		EasyInner.ConfigurarInnerOnLine();
-		EasyInner.DefinirPadraoCartao(1);
-		EasyInner.ConfigurarAcionamento1(9, 15);
-		EasyInner.ConfigurarAcionamento2(9, 15);
-		EasyInner.ConfigurarTipoLeitor(7);
-				
+	private static void machine() throws InterruptedException {
+		System.out.println("parei aki");
+
 	}
 
 }

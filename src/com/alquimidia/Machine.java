@@ -2,8 +2,11 @@ package com.alquimidia;
 
 import java.util.HashMap;
 
+import javax.swing.JOptionPane;
+
 import com.alquimidia.easyInner.entity.Inner;
 import com.alquimidia.enumeradores.Enumeradores;
+import com.topdata.BioService;
 import com.topdata.EasyInner;
 
 public class Machine {
@@ -73,6 +76,14 @@ public class Machine {
 				case ESTADO_RECEBER_MODELO_BIO:
 					PASS_STATE_RECEBER_MODELO_BIO(inner);
 					break;
+				// ESTADO_RECEBER_VERSAO_BIO
+				case ESTADO_RECEBER_VERSAO_BIO:
+					PASS_STATE_RECEBER_VERSAO_BIO(inner);
+					break;
+				// ESTADO_ENVIAR_CFG_OFFLINE
+				case ESTADO_ENVIAR_CFG_OFFLINE:
+					STEP_STATE_ENVIAR_CFG_OFFLINE(inner);
+					break;
 				default:
 					break;
 				}
@@ -81,9 +92,157 @@ public class Machine {
 		}
 	}
 
+	// ESTADO_ENVIAR_CFG_OFFLINE
+	private void STEP_STATE_ENVIAR_CFG_OFFLINE(Inner inner) {
+		try {
+			Integer ret = 0;
+			// MENSAGENS DE STATUS
+			System.out.println("Inner " + inner.Numero + " Enviado configurações OFF-LINE...");
+			// PREENCHE OS CAMPOS DE CONFIGURAÇÕES DO INNER
+			// MontaConfiguracaoInner
+			mountConfiguracaoInner(inner, Enumeradores.MODO_OFF_LINE);
+			// ENVIA O COMANDO DE CONFIGURAÇÃO
+			ret = EasyInner.EnviarConfiguracoes(inner.Numero);
+			// TESTA O RETORNO DO ENVIO DAS CONFIGURAÇÕES OFF LINE
+			if (ret == Enumeradores.RET_COMANDO_OK) {
+				inner.CountTentativasEnvioComando = 0;
+				// VERIFICA SE O ENVIAR LISTA ESTA SELECIONADO
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_LISTA_OFFLINE;
+				inner.TempoColeta = (int) System.currentTimeMillis() + 3000;
+			} else {
+				// CASO ELE NÃO CONSIGA, TENTARA, ENVIAR TRÊS VEZES, SE NÃO CONSEGUIR VOLTA PARA
+				// O PASSO RECONECTAR
+				if (inner.CountTentativasEnvioComando >= 3) {
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
+				}
+				inner.CountTentativasEnvioComando++;
+			}
+		} catch (Exception e) {
+			System.out.println("120" + e.getMessage());
+		}
+
+	}
+
+	// MONTAR CONFIGURAÇÃO INNER
+	// MontaConfiguracaoInner
+	private void mountConfiguracaoInner(Inner inner, int modoOffLine) {
+		System.out.println("aki");
+	}
+
+	// DEFINE VALORES PARA CONFIGURAR O LEITORES
+	private void setsValuesConfigureReaders(Inner inner) {
+		// CONFIGURAÇÃO CATRACA ESQUERDA OU DIREITA
+		// DEFINE OS VALORES PARA CONFIGURAR OS LEITORES DE ACORDO COM O TIPO DE INNER
+		if (inner.DoisLeitores) {
+			if (inner.CatInvertida == false) {
+				// DIREITA SELECIONADO
+				inner.ValorLeitor1 = Enumeradores.SOMENTE_ENTRADA;
+				inner.ValorLeitor2 = Enumeradores.SOMENTE_SAIDA;
+			} else {
+				// ESQUERDA SELECIONADO
+				inner.ValorLeitor1 = Enumeradores.SOMENTE_SAIDA;
+				inner.ValorLeitor2 = Enumeradores.SOMENTE_ENTRADA;
+			}
+		} else {
+			if (inner.CatInvertida == false) {
+				// DIREITA SELECIONADO
+				inner.ValorLeitor1 = Enumeradores.ENTRADA_E_SAIDA;
+			} else {
+				// ESQUERDA SELECIONADO
+				inner.ValorLeitor1 = Enumeradores.ENTRADA_E_SAIDA_INVERTIDAS;
+			}
+
+			inner.ValorLeitor2 = Enumeradores.DESATIVADO;
+		}
+
+	}
+
+	// CONFIGURAR O TIPO DE LEITOR
+	private void selectReaderType(Inner inner) {
+		// CONFIGURAR O TIPO DE LEITOR
+		switch (inner.TipoLeitor) {
+		case Enumeradores.CODIGO_DE_BARRAS:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.CODIGO_DE_BARRAS);
+			break;
+		case Enumeradores.MAGNETICO:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.MAGNETICO);
+			break;
+		case Enumeradores.PROXIMIDADE_ABATRACK2:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.PROXIMIDADE_ABATRACK2);
+			break;
+		case Enumeradores.WIEGAND:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.WIEGAND);
+			break;
+		case Enumeradores.PROXIMIDADE_SMART_CARD:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.PROXIMIDADE_SMART_CARD);
+			break;
+		case Enumeradores.CODIGO_BARRAS_SERIAL:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.CODIGO_BARRAS_SERIAL);
+			break;
+		case Enumeradores.WIEGAND_FC_SEM_SEPARADOR:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.WIEGAND_FC_SEM_SEPARADOR);
+			break;
+		case Enumeradores.WIEGAND_FC_COM_SEPARADOR:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.WIEGAND);
+			break;
+		case Enumeradores.QRCODE:
+			EasyInner.ConfigurarTipoLeitor(Enumeradores.BARRAS_PROX_QRCODE);
+			break;
+		}
+
+	}
+
+	// ESTADO_RECEBER_VERSAO_BIO
+	private void PASS_STATE_RECEBER_VERSAO_BIO(Inner inner) throws InterruptedException {
+		System.out.println("Inner " + inner.Numero + " Estado receber versão bio...");
+		// SE FOR BIOMETRIA
+		if (inner.VersaoFW.getFirwareSup() < 6) {
+			inner.VersaoBio = BioService.ReceberVersaoBioAVer5xx(inner.Numero);
+		} else {
+			inner.VersaoBio = BioService.ReceberVersaoBio6xx(inner.Numero, inner.TipoComBio);
+		}
+		if (inner.VersaoBio != null && inner.VersaoBio != "Modulo incorreto") {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_CFG_OFFLINE;
+		} else if ("Modulo incorreto".equals(inner.VersaoBio)) {
+			stopMaquinaOnline();
+			JOptionPane.showMessageDialog(null, "Modulo incorreto", "Mensagem", JOptionPane.INFORMATION_MESSAGE);
+		} else {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
+		}
+
+	}
+
 	// ESTADO_RECEBER_MODELO_BIO
-	private void PASS_STATE_RECEBER_MODELO_BIO(Inner inner) {
-		System.out.println("parei aki");
+	private void PASS_STATE_RECEBER_MODELO_BIO(Inner inner) throws InterruptedException {
+		System.out.println("Inner " + inner.Numero + " Estado receber modelo bio...");
+		if (inner.VersaoFW.getFirwareSup() < 6) {
+			inner.ModeloBioInner = BioService.ReceberModeloBioAVer5xx(inner.Numero);
+		} else {
+			inner.ModeloBioInner = BioService.ReceberModeloBio6xx(inner.Numero, inner.TipoComBio);
+		}
+		if (inner.ModeloBioInner != null && inner.ModeloBioInner != "Modulo incorreto") {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECEBER_VERSAO_BIO;
+		} else if ("Modulo incorreto".equals(inner.ModeloBioInner)) {
+			stopMaquinaOnline();
+			System.out.println("Modulo incorreto");
+		} else {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
+		}
+	}
+
+	private void stopMaquinaOnline() {
+		stop = true;
+		System.out.println("Maquina parada");
+		ReturnStateInners(Enumeradores.EstadosInner.ESTADO_CONECTAR, Enumeradores.EstadosTeclado.AGUARDANDO_TECLADO);
+
+	}
+
+	private void ReturnStateInners(Enumeradores.EstadosInner statesInner, Enumeradores.EstadosTeclado keyboardStatus) {
+		for (Object objInner : listInners.values()) {
+			Inner inner = (Inner) objInner;
+			inner.EstadoAtual = statesInner;
+			inner.EstadoTeclado = keyboardStatus;
+		}
 	}
 
 	// ESTADO_RECEBER_FIRWARE

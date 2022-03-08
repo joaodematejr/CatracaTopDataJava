@@ -126,7 +126,86 @@ public class Machine {
 	// MONTAR CONFIGURAÇÃO INNER
 	// MontaConfiguracaoInner
 	private void mountConfiguracaoInner(Inner inner, int modoOffLine) {
-		System.out.println("aki");
+		try {
+			// ANTES DE REAILIZAR A CONFIGURAÇÃO PRECISA DEFINIR O PADRÃO DA CARTÃO
+			if (inner.PadraoCartao == 1) {
+				EasyInner.DefinirPadraoCartao(Enumeradores.PADRAO_LIVRE);
+			} else {
+				EasyInner.DefinirPadraoCartao(Enumeradores.PADRAO_TOPDATA);
+			}
+			// DEFINE MODO DE COMUNICAÇÃO
+			if (modoOffLine == Enumeradores.MODO_OFF_LINE) {
+				// CONFIGURAÇÃO PARA MODO OFFLINE
+				// PREPARA O INNER PARA TRABALHAR NO MODO OFF LINE.
+				// AINDA NÃO ENVIA ESSA INFORMAÇÃO PARA O EQUIPAMENTO.
+				EasyInner.ConfigurarInnerOffLine();
+			} else {
+				// CONFIGURAÇÃO PARA MODO ONLINE
+				// PREPARA O INNER PARA TRABALHAR NO MODO ON-LINE
+				// AINDA NÃO ENVIA ESSA INFORMAÇÃO PARA O EQUIPAMENTO.
+				EasyInner.ConfigurarInnerOnLine();
+			}
+			// VERIFICAR
+			// ACIONAMENTOS 1 E 2
+			// CONFIGURA COMO IRA O FUNCIONAR O ACIONAMENTO(RELE) 1 E 2 DO INNER, E POR
+			// QUANTO TEMPO SERÁ ACIONADO
+			System.out.println("inner.Acionamento" + inner.Acionamento);
+			switch (inner.Acionamento) {
+			case Enumeradores.Acionamento_Catraca_Urna:
+				EasyInner.ConfigurarAcionamento1(Enumeradores.ACIONA_REGISTRO_ENTRADA_OU_SAIDA, 5);
+				EasyInner.ConfigurarAcionamento2(Enumeradores.ACIONA_REGISTRO_SAIDA, 5);
+				break;
+			}
+			selectReaderType(inner);
+			EasyInner.DefinirQuantidadeDigitosCartao(inner.QtdDigitos);
+			// HABILITAR O TECLADO
+			EasyInner.HabilitarTeclado((inner.Teclado ? Enumeradores.Opcao_SIM : Enumeradores.Opcao_NAO), 0);
+			// DEFINE OS VALORES PARA CONFIGURAR OS LEITORES DE ACORDO COM O TIPO DE INNER
+			// DefineValoresParaConfigurarLeitores
+			setsValuesConfigureReaders(inner);
+			EasyInner.ConfigurarLeitor1(inner.ValorLeitor1);
+			EasyInner.ConfigurarLeitor2(inner.ValorLeitor2);
+			// BOX = CONFIGURA EQUIPAMENTOS COM DOIS LEITORES
+			if (inner.DoisLeitores) {
+				// EXIBE MENSAGENS DO SEGUNDO LEITOR
+				EasyInner.ConfigurarWiegandDoisLeitores(1, Enumeradores.Opcao_SIM);
+			}
+			// REGISTRA ACESSO NEGADO
+			EasyInner.RegistrarAcessoNegado(1);
+			// CATRACA
+			// DEFINE QUAL SERA O TIPO DE REGISTRO REALIZADO PELO INNER AO APROXIMAR UM
+			// CARTÃO DO TIPO PROXIMIDADE NO LEITOR DO INNER, SEM QUE O USUARIO TENHA
+			// PRESSIONADO A TECLA ENTRADA, SAIDA OU ENTRADA
+			if ((inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada_E_Saida)
+					|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Liberada_2_Sentidos)
+					|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Sentido_Giro)) {
+				// 12 LIBERA A CATRACA NOS DOIS SENTIDOS E REGISTRA O BILHETE CONFORME O SENTIDO
+				// GIRO
+				EasyInner.DefinirFuncaoDefaultLeitoresProximidade(12);
+			} else {
+				if ((inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada) || (inner.Acionamento == Enumeradores.Acionamento_Catraca_Saida_Liberada)) {
+					if (inner.CatInvertida == false) {
+						// 10 REGISTRAR SEMPRE COMO ENTRADA
+						EasyInner.DefinirFuncaoDefaultLeitoresProximidade(10); 
+					} else {
+						// 11 REGISTRAR SEMPRE COMO SAIDA
+						EasyInner.DefinirFuncaoDefaultLeitoresProximidade(11); 
+					}
+				} else {
+					if (inner.CatInvertida == false) {
+						// 11 REGISTRAR SEMPRE COMO SAIDA
+						EasyInner.DefinirFuncaoDefaultLeitoresProximidade(11);
+					} else {
+						// 10 REGISTRAR SEMPRE COMO ENTRADA
+						EasyInner.DefinirFuncaoDefaultLeitoresProximidade(10);
+					}
+				}
+			}
+			EasyInner.DefinirNumeroCartaoMaster("99999999999999");
+			System.out.println("parei aki");
+		} catch (Exception e) {
+			System.out.println("133" + e.getMessage());
+		}
 	}
 
 	// DEFINE VALORES PARA CONFIGURAR O LEITORES

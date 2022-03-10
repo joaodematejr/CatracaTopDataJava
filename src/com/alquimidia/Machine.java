@@ -4,6 +4,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -28,6 +29,9 @@ public class Machine {
 	private boolean stop;
 	Long initConnect;
 
+	boolean releaseEntry = false;
+	boolean releaseInvertedEntry = false;
+
 	public Machine() {
 		listInners = new HashMap<Integer, Inner>();
 		stop = false;
@@ -49,7 +53,7 @@ public class Machine {
 			inner.PadraoCartao = 1;
 			inner.Numero = 1;
 			inner.QtdDigitos = 14;
-			inner.TipoLeitor = 4;
+			inner.TipoLeitor = 8;
 			inner.Porta = 3570;
 			inner.Acionamento = 8;
 			inner.TipoConexao = 2;
@@ -139,11 +143,294 @@ public class Machine {
 				case ESTADO_POLLING:
 					STEP_POLLING_STATE(inner);
 					break;
+				// ESTADO_COLETAR_BILHETES
+				case ESTADO_COLETAR_BILHETES:
+					STEP_STATUS_COLLECT_TICKETS(inner);
+					break;
+				// ESTADO_PING_ONLINE
+				case ESTADO_PING_ONLINE:
+					STEP_STATE_SEND_PING_ONLINE(inner);
+					break;
+				// ESTADO_VALIDAR_ACESSO
+				case ESTADO_VALIDAR_ACESSO:
+					STEP_STATUS_VALIDATE_ACCESS(inner);
+					break;
+				// ESTADO_ENVIAR_MSG_ACESSO_NEGADO
+				case ESTADO_ENVIAR_MSG_ACESSO_NEGADO:
+					STEP_STATUS_SEND_MSG_ACCESS_DENIED(inner);
+					break;
+				// ESTADO_AGUARDA_TEMPO_MENSAGEM
+				case ESTADO_AGUARDA_TEMPO_MENSAGEM:
+					STEP_STATUS_WAITING_TIME_MESSAGE(inner);
+					break;
+
 				default:
 					break;
 				}
 			}
 			Thread.sleep(1);
+		}
+	}
+
+	// PASSO_ESTADO_AGUARDA_TEMPO_MENSAGEM
+	private void STEP_STATUS_WAITING_TIME_MESSAGE(Inner inner) {
+		try {
+			System.out.println("Inner " + inner.Numero + " Aguardar tempo mensagem...");
+			// APOS PASSAR OS 2 SEGUNDOS VOLTA PAR AO PASSO ENVIAR MENSAGEM PADRAO
+			long tempo = (int) System.currentTimeMillis() - inner.TempoInicialMensagem;
+			if (tempo > 2000) {
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_MSG_PADRAO;
+				EasyInner.DesligarLedVermelho(inner.Numero);
+			}
+		} catch (Exception e) {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
+		}
+
+	}
+
+	// PASSO_ESTADO_ENVIAR_MSG_ACESSO_NEGADO
+	private void STEP_STATUS_SEND_MSG_ACCESS_DENIED(Inner inner) {
+		try {
+			System.out.println("Inner " + inner.Numero + " Enviar mensagem acesso negado...");
+			// TESTA O RETORNO DO COMANDO DE ENVIO DE MENSAGEM PADRAO ONLINE
+			if (EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 0,
+					" Acesso Negado!  NAO CADASTRADO \r\n") == Enumeradores.RET_COMANDO_OK) {
+				inner.TempoInicialMensagem = System.currentTimeMillis();
+				EasyInner.AcionarBipLongo(inner.Numero);
+				// if (inner.InnerNetAcesso) {
+				EasyInner.LigarLedVermelho(inner.Numero);
+				// }
+				// MUDA O PASSO PARA CONFIGURAÇÃO DE ENTRADA ONLINE
+				inner.TempoInicialMensagem = (int) System.currentTimeMillis();
+				inner.CountTentativasEnvioComando = 0;
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_AGUARDA_TEMPO_MENSAGEM;
+			} else {
+				// CASO ELE NÃO CONSIGA, TENTARA ENVIAR TRES VEZES SE NÃO CONSEGUIR VOLTA PAR AO
+				// PASSO RECONECTAR
+				if (inner.CountTentativasEnvioComando >= 3) {
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
+				}
+				// ADICIONA 1 AO CONTADOR DE TENTATIVAS
+				inner.CountTentativasEnvioComando++;
+			}
+		} catch (Exception e) {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
+		}
+
+	}
+
+	// PASSO_ESTADO_VALIDAR_ACESSO
+	private void STEP_STATUS_VALIDATE_ACCESS(Inner inner) {
+		// INNER ESTADO ATUAL = ENUMERADORES ESTADOS INNER ESTADO_DEFINE_PROCESSO;
+		// E URNA OU ENTRADA E SAIDA OU LIBERADO 2 SENTIDOS OU SENTIDOS GIRO
+		// E CARTAO = PROXIMIDADE
+		System.out.println("Inner " + inner.Numero + " Validar Acesso...");
+		// LiberaAcesso
+		if (releaseAccess(inner.BilheteInner.Cartao.toString()) == false) {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_MSG_ACESSO_NEGADO;
+		}
+		// SE 1 LEITOR
+		// E URNA OU ENTRADA E SAIDA OU LIBERADA 2 SENTIDOS OU SENTIDOS GIRO CARTAO =
+		// PROXIMIDADE
+		else if (((inner.DoisLeitores == false)
+				&& ((inner.Acionamento == Enumeradores.Acionamento_Catraca_Urna)
+						|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada_E_Saida)
+						|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Liberada_2_Sentidos)
+						|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Sentido_Giro))
+				&& ((inner.TipoLeitor == 2) || (inner.TipoLeitor == 3) || (inner.TipoLeitor == 4)))) {
+			if (inner.EstadoTeclado == Enumeradores.EstadosTeclado.TECLADO_EM_BRANCO) {
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_DEFINICAO_TECLADO;
+			}
+			// SE ESTAMOS TRABALHANDO COM URNA E 1 LEITOR
+			if ((inner.Catraca) && (inner.Acionamento == Enumeradores.Acionamento_Catraca_Urna)) {
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIA_MSG_URNA;
+			}
+		} else if (inner.Acionamento == Enumeradores.Acionamento_Coletor) {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ACIONAR_RELE1;
+		} else {
+			if (inner.Catraca) {
+				if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada) {
+					// HabilitarLadoCatraca
+					enableSideTurnstile("Entrada", inner.CatInvertida);
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
+				} else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Saida) {
+					enableSideTurnstile("Saida", inner.CatInvertida);
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
+				}
+				// ADICIONAMENTO SAIDA LIBERADA
+				else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Saida_Liberada) {
+					enableSideTurnstile("Entrada", inner.CatInvertida);
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
+				}
+				// ADICIONAMENTO ENTRADA LIBERADA
+				else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada_Liberada) {
+					enableSideTurnstile("Saida", inner.CatInvertida);
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
+				}
+				// SE URNA E 2 LEITORES
+				else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Urna
+						&& inner.BilheteInner.Origem == Enumeradores.VIA_LEITOR2) {
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_VALIDA_URNA_CHEIA;
+				} else {
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
+				}
+			}
+		}
+
+	}
+
+	// HabilitarLadoCatraca
+	private void enableSideTurnstile(String side, boolean catInvertida) {
+		if (side.equals("Entrada")) {
+			// ENTRADA
+			if (catInvertida == false) {
+				releaseEntry = true;
+				releaseInvertedEntry = false;
+			} else {
+				releaseInvertedEntry = true;
+				releaseEntry = false;
+			}
+		}
+
+		if (side.equals("Saida")) {
+			// SAIDA
+			if (catInvertida == false) {
+				releaseEntry = true;
+				releaseInvertedEntry = false;
+			} else {
+				releaseInvertedEntry = true;
+				releaseEntry = false;
+			}
+		}
+
+	}
+
+	// LiberaAcesso
+	private boolean releaseAccess(String numCartao) {
+		try {
+			List<Usuarios> listcard = new ArrayList();
+			Usuarios user1 = new Usuarios();
+			user1.setCodigoUsuario(1);
+			user1.setUsuario("201874550596");
+			user1.setFaixa(101);
+
+			// CARTÃO PARA TESTE
+			Usuarios user2 = new Usuarios();
+			user2.setCodigoUsuario(2);
+			user2.setUsuario("ENGENHARIASW");
+			user2.setFaixa(101);
+
+			listcard.add(user1);
+			listcard.add(user2);
+
+			boolean ret = false;
+			// DESCOBRIR SE O CARTAO ESTA INCLUIDO NO LIST-OFFLINE, PODE SER LISTA ONLINE
+			// TAMBEM
+			for (int i = 0; i < listcard.size(); i++) {
+				String slCartaoSZero = EasyInnerUtils.remZeroEsquerda(listcard.get(i).getUsuario());
+				if (slCartaoSZero.equals(numCartao.trim())) {
+					// if(listaCartao.get(i).getFaixa()==101)
+					// {
+					ret = true;
+					break;
+					/*
+					 * } else { ret = false; break; }
+					 */
+				}
+			}
+			return ret;
+		} catch (Exception e) {
+			return false;
+		}
+
+	}
+
+	// PASSO_ESTADO_ENVIA_PING_ONLINE
+	private void STEP_STATE_SEND_PING_ONLINE(Inner inner) {
+		try {
+			// EXIBE ESTADO DO INNER NO RODAPÉ DA JANELA
+			System.out.println("Inner " + inner.Numero + " PING ONLINE...");
+			// ENVIAR O COMANDO DE PING ON ONLINE, SE O RETORNO FOR OK VOLTA PARA O ESTADO
+			// ONDE CHAMOU O ESTADO
+			Integer retorno = EasyInner.PingOnLine(inner.Numero);
+			if (retorno == EasyInner.RET_COMANDO_OK) {
+				inner.EstadoAtual = inner.EstadoSolicitacaoPingOnLine;
+			} else {
+				// CASO ELE NÃO CONSIGA, TENTARA ENVIAR TRES VEZES, SE NAO CONSEGUIR VOLTAR PARA
+				// O PASSO RECONECTAR
+				if (inner.CountTentativasEnvioComando >= 3) {
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
+				}
+				inner.CountTentativasEnvioComando++;
+			}
+			inner.TempoInicialPingOnLine = System.currentTimeMillis();
+		} catch (Exception e) {
+			System.out.println(e);
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
+		}
+
+	}
+
+	// PASSO_ESTADO_COLETAR_BILHETES
+	private void STEP_STATUS_COLLECT_TICKETS(Inner inner) throws InterruptedException {
+		if (inner.InnerNetAcesso) {
+			// ColetarBilhetesInnerAcesso(inner);
+			collectTicketsInnerNet(inner);
+		} else {
+			// ColetarBilhetesInnerAcesso(inner);
+			collectTicketsInnerNet(inner);
+			if (inner.Catraca) {
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_MSG_OFFLINE_CATRACA;
+			} else {
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_MSG_OFFLINE_COLETOR;
+			}
+		}
+
+	}
+
+	// ColetarBilhetesInnerAcesso
+	private void collectTicketsInnerNet(Inner inner) throws InterruptedException {
+		int[] ticket = new int[8];
+		StringBuffer card;
+		Integer nTicket;
+		Integer i = Enumeradores.Limpar;
+		int receber[] = new int[2];
+		int ret = 0;
+		System.out.println("Inner " + inner.Numero + " Coletar bilhete Inner acesso...");
+		// VERIFICA CONEXAO
+		nTicket = 0;
+		if (inner.BilhetesAReceber > 0) {
+			card = new StringBuffer();
+			// COLETA UM BILHETE OFF-LINE QUE ESTÁ ARMAZENADO NA MEMORIA DO INNER
+			ret = EasyInner.ColetarBilhete(inner.Numero, ticket, card);
+			if (ret == Enumeradores.RET_COMANDO_OK) {
+				// ARMAZENA OS DADOS DO BILHETE NO LIST, PODE SER UTILIZADO COM BANCO DE DADOS
+				// OU OUTRO MEIO DE ARMAZENAMENTO
+				System.out
+						.println(
+								"Tipo:" + String.valueOf(ticket[0]) + " CartÃ£o:" + card.toString() + " Data:"
+										+ (String.valueOf(ticket[1]).length() == 1 ? "0" + String.valueOf(ticket[1])
+												: String.valueOf(ticket[1]))
+										+ "/"
+										+ (String.valueOf(ticket[2]).length() == 1 ? "0" + String.valueOf(ticket[2])
+												: String.valueOf(ticket[2]))
+										+ "/" + String.valueOf(ticket[3]) + " Hora:"
+										+ (String.valueOf(ticket[4]).length() == 1 ? "0" + String.valueOf(ticket[4])
+												: String.valueOf(ticket[4]))
+										+ ":"
+										+ (String.valueOf(ticket[5]).length() == 1 ? "0" + String.valueOf(ticket[5])
+												: String.valueOf(ticket[5]))
+										+ ":"
+										+ (String.valueOf(ticket[6]).length() == 1 ? "0" + String.valueOf(ticket[6])
+												: String.valueOf(ticket[6]))
+										+ "\n");
+				nTicket++;
+				inner.BilhetesAReceber--;
+			}
+			System.out.println("Foram coletados " + nTicket + " bilhete(s) offline !");
+		}
+		if (inner.BilhetesAReceber == 0) {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECEBER_QTD_BILHETES_OFF;
 		}
 	}
 
@@ -176,28 +463,113 @@ public class Machine {
 					return;
 				}
 				/*******************************************************/
-				//ATRIBUINDO OS DADOS DO CARTÃO AO INNER ATUAL
-				inner.BilheteInner.Origem        = iArrBcardRb[0];
-                inner.BilheteInner.Complemento   = iArrBcardRb[1];
-                inner.BilheteInner.Dia           = iArrBcardRb[2];
-                inner.BilheteInner.Mes           = iArrBcardRb[3];
-                inner.BilheteInner.Ano           = iArrBcardRb[4];
-                inner.BilheteInner.Hora          = iArrBcardRb[5];
-                inner.BilheteInner.Minuto        = iArrBcardRb[6];
-                inner.BilheteInner.Segundo       = iArrBcardRb[7];
-                
-                //LIMPANDO A VARIAVEL STRINGBUILDER E ATRIBUINDO UM NOVO VALOR
-                inner.BilheteInner.Cartao.setLength(0);
-                inner.BilheteInner.Cartao = new StringBuilder(card.toString());
-                
-                System.out.println("194 " + inner.BilheteInner.Cartao);
-                
-                //PAREI AKI
+				// ATRIBUINDO OS DADOS DO CARTÃO AO INNER ATUAL
+				inner.BilheteInner.Origem = iArrBcardRb[0];
+				inner.BilheteInner.Complemento = iArrBcardRb[1];
+				inner.BilheteInner.Dia = iArrBcardRb[2];
+				inner.BilheteInner.Mes = iArrBcardRb[3];
+				inner.BilheteInner.Ano = iArrBcardRb[4];
+				inner.BilheteInner.Hora = iArrBcardRb[5];
+				inner.BilheteInner.Minuto = iArrBcardRb[6];
+				inner.BilheteInner.Segundo = iArrBcardRb[7];
+
+				// LIMPANDO A VARIAVEL STRINGBUILDER E ATRIBUINDO UM NOVO VALOR
+				inner.BilheteInner.Cartao.setLength(0);
+				inner.BilheteInner.Cartao = new StringBuilder(card.toString());
+
+				// MontarBilheteRecebido(inner);
+				assembleTicketReceived(inner);
+				// PreencherBilheteDisplay(inner);
+				fillTicketDisplay(inner);
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_VALIDAR_ACESSO;
+
+			} else {
+				long temp = System.currentTimeMillis() - inner.TempoInicialPingOnLine;
+				// SE PASSAR 3 SEGUNDOS SEM RECEBER NADA, PASSA PARA O ESTADO ENVIAR PING
+				// ONLINE, MANTER O EQUIPAMENTO EM ON LINE.
+				if ((int) temp > 3000) {
+					inner.EstadoSolicitacaoPingOnLine = inner.EstadoAtual;
+					inner.CountTentativasEnvioComando = 0;
+					inner.TempoInicialPingOnLine = (int) System.currentTimeMillis();
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_PING_ONLINE;
+				}
 			}
 		} catch (Exception e) {
-			// TODO: handle exception
+			System.err.println(e);
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
+	}
+
+	// PreencherBilheteDisplay
+	private void fillTicketDisplay(Inner inner) {
+		String sBilheteDisplay = "";
+		sBilheteDisplay += "Marcacoes Online. Inner: " + inner.Numero + " Complemento:"
+				+ (inner.BilheteInner.Complemento);
+		// SE QUANTIDADE DE DIGITO INFORMADO FOR MAIOR QUE 14 NÃO DEVE MOSTRAR DATA E
+		// HORARIO
+		if (inner.QtdDigitos <= 14) {
+			sBilheteDisplay += " Data:"
+					+ (String.valueOf(inner.BilheteInner.Dia).length() == 1
+							? "0" + String.valueOf(inner.BilheteInner.Dia)
+							: String.valueOf(inner.BilheteInner.Dia))
+					+ "/"
+					+ (String.valueOf(inner.BilheteInner.Mes).length() == 1
+							? "0" + String.valueOf(inner.BilheteInner.Mes)
+							: String.valueOf(inner.BilheteInner.Mes))
+					+ "/" + String.valueOf(inner.BilheteInner.Ano) + " Hora:"
+					+ (String.valueOf(inner.BilheteInner.Hora).length() == 1
+							? "0" + String.valueOf(inner.BilheteInner.Hora)
+							: String.valueOf(inner.BilheteInner.Hora))
+					+ ":"
+					+ (String.valueOf(inner.BilheteInner.Minuto).length() == 1
+							? "0" + String.valueOf(inner.BilheteInner.Minuto)
+							: String.valueOf(inner.BilheteInner.Minuto))
+					+ ":"
+					+ (String.valueOf(inner.BilheteInner.Segundo).length() == 1
+							? "0" + String.valueOf(inner.BilheteInner.Segundo)
+							: String.valueOf(inner.BilheteInner.Segundo))
+					+ " " + " Cartão: " + inner.BilheteInner.Cartao + "\n";
+		} else {
+			sBilheteDisplay += " Cartão: " + inner.BilheteInner.Cartao + "\r\n";
+		}
+
+		// ADICIONA BILHETE COLETADO NA LISTA		
+		sendQrCodeApi(inner.BilheteInner.Cartao);
+		
+	}
+
+	private void sendQrCodeApi(StringBuilder cartao) {
+		System.out.println(cartao);
+		
+	}
+
+	// MontarBilheteRecebido
+	private void assembleTicketReceived(Inner inner) {
+		String sTicketReceived = inner.BilheteInner.Cartao.toString();
+		Integer tam;
+		if (inner.QtdDigitos > sTicketReceived.length()) {
+			tam = sTicketReceived.length();
+		} else {
+			tam = inner.QtdDigitos;
+		}
+		String sNumCartao = "";
+		// SE O CARTAO PADRAO FOR TOPDATA, CONFIGURAR OS DIGITOS DO CARTAO COMO PADRAO
+		// TOPDATA
+		if (inner.PadraoCartao == 0) {
+			// PADRAO TOPDATA --> CARTAO TOP DATA DEVE SER SEMPRE 14 DIGITOS
+			sNumCartao = Long.toString(Long.parseLong(sTicketReceived.substring(0, tam)));
+			sNumCartao = sNumCartao.substring(13, 14) + "" + sNumCartao.substring(4, 8);
+			// GRAVANDO NO INNER O NUMERO DO CARTAO FORMATADO
+			StringBuilder sbAux = new StringBuilder(sNumCartao);
+			inner.BilheteInner.Cartao.delete(0, inner.BilheteInner.Cartao.length());
+			inner.BilheteInner.Cartao = new StringBuilder(sNumCartao);
+		} else {
+			sNumCartao = EasyInnerUtils.remZeroEsquerda(inner.BilheteInner.Cartao.toString());
+			// GRAVANDO NO INNER O NUMERO DO CARTAO FORMATADO
+			inner.BilheteInner.Cartao.delete(0, inner.BilheteInner.Cartao.length());
+			inner.BilheteInner.Cartao = new StringBuilder(sNumCartao);
+		}
 	}
 
 	// PASSO_ESTADO_CONFIGURAR_ENTRADAS_ONLINE
@@ -338,40 +710,44 @@ public class Machine {
 			// HABILITADO
 			settings = "1" + settings;
 			/*
-            --------------------------------------------------------------------------------------------------
-            |       7        |     6      |   5    |   4    |   3    |    2    |      1     |        0       |
-            --------------------------------------------------------------------------------------------------
-            | SETA/RESETA    |  Bit 2     |  Bit 1 |  Bit 0 | Bit 2  |  Bit 1  |   Bit 0    |  TECLADO       |
-            |   CONFIG.      | LEITOR 2   |        |        |        |         |            |                |
-            |   bit-a-bit    |            |        |        |        |         |            |                |
-            --------------------------------------------------------------------------------------------------
-            | 1   HABILITA   | 000 - DESATIVAR LEITOR       |  000 - DESATIVAR LEITOR       | 1 HABILITA     |
-            | 0   DESABILITA | 001 - LEITOR ENTRADA         |  001 - LEITOR ENTRADA         | 0 DESABILITA   |
-            |                | 010 - LEITOR SAIDA           |  010 - LEITOR SAIDA           |                |
-            |                | 011 - LEITOR ENTRADA E SAIDA |  011 - LEITOR ENTRADA E SAIDA |                |
-            |                | 100 - LEITOR ENTRADA E SAIDA |  100 - LEITOR ENTRADA E SAIDA |                |
-            |                |   INVERTIDO                  |   INVERTIDO                   |                |
-            --------------------------------------------------------------------------------------------------
-            */
+			 * -----------------------------------------------------------------------------
+			 * --------------------- | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+			 * -----------------------------------------------------------------------------
+			 * --------------------- | SETA/RESETA | Bit 2 | Bit 1 | Bit 0 | Bit 2 | Bit 1 |
+			 * Bit 0 | TECLADO | | CONFIG. | LEITOR 2 | | | | | | | | bit-a-bit | | | | | |
+			 * | |
+			 * -----------------------------------------------------------------------------
+			 * --------------------- | 1 HABILITA | 000 - DESATIVAR LEITOR | 000 - DESATIVAR
+			 * LEITOR | 1 HABILITA | | 0 DESABILITA | 001 - LEITOR ENTRADA | 001 - LEITOR
+			 * ENTRADA | 0 DESABILITA | | | 010 - LEITOR SAIDA | 010 - LEITOR SAIDA | | | |
+			 * 011 - LEITOR ENTRADA E SAIDA | 011 - LEITOR ENTRADA E SAIDA | | | | 100 -
+			 * LEITOR ENTRADA E SAIDA | 100 - LEITOR ENTRADA E SAIDA | | | | INVERTIDO |
+			 * INVERTIDO | |
+			 * -----------------------------------------------------------------------------
+			 * ---------------------
+			 */
 		} else {
 			// BIT FIXO + HABILITADO + INDENTIFICAÇÃO + VERIFICACAO + BIT FIXO + HABILITAR
 			// LEITOR + HABILITAR APENAS LEITOR
 			settings = "0" + "1" + inner.Identificacao + inner.Verificacao + "0" + (inner.DoisLeitores ? "11" : "10")
 					+ settings;
 
-            /*
-            ------------------------------------------------------------------------------------------------------------------------
-            |    7     |       6       |       5       |       4       |      3       |       2      |      1       |      0       |
-            ------------------------------------------------------------------------------------------------------------------------
-            | Bit FIXO | SETA/RESETA   | IDENTIFICAÇÃO |  VERIFICAÇÃO  |   Bit FIXO   |   LEITOR 1   | LEITOR 2     |  TECLADO     |
-            |   '0'    |    CONFIG.    |      BIO      |      BIO      |    CONFIG    |              |              |              |
-            |          | bit-a-bit BIO |               |               |      L2      |              |              |              |
-            |          |               |               |               |     '0'      |              |              |              |
-            ------------------------------------------------------------------------------------------------------------------------
-            |    0     |  1-HABILITA   | 1-HABILITA    | 1-HABILITA    | 1-HABILITA   | 1-HABILITA   | 1-HABILITA   | 1-HABILITA   |
-            |          |  0-DESABILITA | 0-DESABILITA  | 0-DESABILITA  | 0-DESABILITA | 0-DESABILITA | 0-DESABILITA | 0-DESABILITA |
-            ------------------------------------------------------------------------------------------------------------------------
-            */
+			/*
+			 * -----------------------------------------------------------------------------
+			 * ------------------------------------------- | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+			 * -----------------------------------------------------------------------------
+			 * ------------------------------------------- | Bit FIXO | SETA/RESETA |
+			 * IDENTIFICAÇÃO | VERIFICAÇÃO | Bit FIXO | LEITOR 1 | LEITOR 2 | TECLADO | |
+			 * '0' | CONFIG. | BIO | BIO | CONFIG | | | | | | bit-a-bit BIO | | | L2 | | | |
+			 * | | | | | '0' | | | |
+			 * -----------------------------------------------------------------------------
+			 * ------------------------------------------- | 0 | 1-HABILITA | 1-HABILITA |
+			 * 1-HABILITA | 1-HABILITA | 1-HABILITA | 1-HABILITA | 1-HABILITA | | |
+			 * 0-DESABILITA | 0-DESABILITA | 0-DESABILITA | 0-DESABILITA | 0-DESABILITA |
+			 * 0-DESABILITA | 0-DESABILITA |
+			 * -----------------------------------------------------------------------------
+			 * -------------------------------------------
+			 */
 		}
 		// CONVERTER BINARIO PARA DECIMAL
 		return EasyInnerUtils.BinarioParaDecimal(settings);

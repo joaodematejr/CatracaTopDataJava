@@ -1,7 +1,13 @@
 package com.alquimidia;
 
+import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+
+import java.net.URL;
 import java.sql.SQLException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -17,19 +23,25 @@ import com.alquimidia.dao.DAOUsuarios;
 import com.alquimidia.dao.DAOUsuariosBio;
 import com.alquimidia.easyInner.entity.Inner;
 import com.alquimidia.entity.Horarios;
+import com.alquimidia.entity.TicketGate;
 import com.alquimidia.entity.UsuarioSemDigital;
 import com.alquimidia.entity.Usuarios;
 import com.alquimidia.enumeradores.Enumeradores;
 import com.alquimidia.utils.EasyInnerUtils;
+import com.google.gson.Gson;
 import com.topdata.BioService;
 import com.topdata.EasyInner;
 
 public class Machine {
+	TicketGate ticketGate = new TicketGate();
+	Gson gson = new Gson();
 	private HashMap<Integer, Inner> listInners;
 	private boolean stop;
 	Long initConnect;
 
+	// LIBERA ENTRADA
 	boolean releaseEntry = false;
+	// LIBERA ENTRADA INVERTIDA
 	boolean releaseInvertedEntry = false;
 
 	public Machine() {
@@ -41,7 +53,7 @@ public class Machine {
 		listInners.put(inner.Numero, inner);
 	}
 
-	public void startMachine() throws InterruptedException {
+	public void startMachine() throws InterruptedException, IOException {
 		Inner inner = new Inner();
 		Integer ret = 0;
 		EasyInner.FecharPortaComunicacao();
@@ -73,7 +85,7 @@ public class Machine {
 	}
 
 	// INICIAR COMUNICAÇÃO COM A CATRACA
-	private void machine() throws InterruptedException {
+	private void machine() throws InterruptedException, IOException {
 		while (!stop) {
 			for (Object objInner : listInners.values()) {
 				Inner inner = (Inner) objInner;
@@ -163,13 +175,55 @@ public class Machine {
 				case ESTADO_AGUARDA_TEMPO_MENSAGEM:
 					STEP_STATUS_WAITING_TIME_MESSAGE(inner);
 					break;
-
+				// ESTADO_LIBERAR_CATRACA
+				case ESTADO_LIBERAR_CATRACA:
+					STEP_STATUS_RELEASES_RATCHET(inner);
+					break;
 				default:
 					break;
 				}
 			}
 			Thread.sleep(1);
 		}
+	}
+
+	// PASSO_ESTADO_LIBERA_GIRO_CATRACA
+	private void STEP_STATUS_RELEASES_RATCHET(Inner inner) {
+		try {
+			Integer ret = 0;
+			// EXIBE ESTADO DO INNER
+			System.out.println("Inner " + inner.Numero + " Libera Giro da Catraca...");
+			if (releaseEntry) {
+				EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 0, "                ENTRADA LIBERADA");
+				releaseEntry = false;
+				ret = EasyInner.LiberarCatracaEntrada(inner.Numero);
+			} else if (releaseInvertedEntry) {
+				EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 0, "                ENTRADA LIBERADA");
+				releaseInvertedEntry = false;
+				ret = EasyInner.LiberarCatracaEntradaInvertida(inner.Numero);
+			} else {
+				EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 0, "LIBERADO DOIS SENTIDOS");
+				ret = EasyInner.LiberarCatracaDoisSentidos(inner.Numero);
+			}
+			// TESTA RETORNO DO COMANDO
+			if (ret == Enumeradores.RET_COMANDO_OK) {
+				EasyInner.AcionarBipCurto(inner.Numero);
+				inner.CountPingFail = 0;
+				inner.CountTentativasEnvioComando = 0;
+				inner.TempoInicialPingOnLine = (int) System.currentTimeMillis();
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_MONITORA_GIRO_CATRACA;
+			} else {
+				//SE O RETORNO FOR DIFERENTE DE 0 TENTA LIBERAR A CATRACA 3 VEZES, CASO NÃO CONSIGA ENVIAR O COMANDO VOLTA PARA O PASSO RECONECTAR
+				if (inner.CountTentativasEnvioComando >= 3) {
+					inner.CountTentativasEnvioComando = 0;
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
+				}
+				inner.CountTentativasEnvioComando++;
+			}
+		} catch (Exception e) {
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
+		}
+
 	}
 
 	// PASSO_ESTADO_AGUARDA_TEMPO_MENSAGEM
@@ -220,62 +274,59 @@ public class Machine {
 	}
 
 	// PASSO_ESTADO_VALIDAR_ACESSO
-	private void STEP_STATUS_VALIDATE_ACCESS(Inner inner) {
+	private void STEP_STATUS_VALIDATE_ACCESS(Inner inner) throws IOException {
 		// INNER ESTADO ATUAL = ENUMERADORES ESTADOS INNER ESTADO_DEFINE_PROCESSO;
 		// E URNA OU ENTRADA E SAIDA OU LIBERADO 2 SENTIDOS OU SENTIDOS GIRO
 		// E CARTAO = PROXIMIDADE
 		System.out.println("Inner " + inner.Numero + " Validar Acesso...");
-		// LiberaAcesso
-		if (releaseAccess(inner.BilheteInner.Cartao.toString()) == false) {
-			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_MSG_ACESSO_NEGADO;
+
+		String codTicket = "260551405";
+
+		String innerCatraca = "1";
+		ticketGate.setId_catraca(innerCatraca);
+
+		URL url = new URL("https://api.parques.frameticket.com.br/5.0/catraca/consulta-ticket/" + codTicket);
+		HttpURLConnection http = (HttpURLConnection) url.openConnection();
+		http.setRequestMethod("POST");
+		http.setDoOutput(true);
+		http.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+		http.setRequestProperty("Accept", "application/json");
+		http.setRequestProperty("ft-tokenapp", "#");
+		http.setRequestProperty("ft-appclient", "#");
+
+		String req = gson.toJson(ticketGate);
+
+		try (OutputStream os = http.getOutputStream()) {
+			byte[] input = req.getBytes("utf-8");
+			os.write(input, 0, input.length);
 		}
-		// SE 1 LEITOR
-		// E URNA OU ENTRADA E SAIDA OU LIBERADA 2 SENTIDOS OU SENTIDOS GIRO CARTAO =
-		// PROXIMIDADE
-		else if (((inner.DoisLeitores == false)
-				&& ((inner.Acionamento == Enumeradores.Acionamento_Catraca_Urna)
-						|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada_E_Saida)
-						|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Liberada_2_Sentidos)
-						|| (inner.Acionamento == Enumeradores.Acionamento_Catraca_Sentido_Giro))
-				&& ((inner.TipoLeitor == 2) || (inner.TipoLeitor == 3) || (inner.TipoLeitor == 4)))) {
-			if (inner.EstadoTeclado == Enumeradores.EstadosTeclado.TECLADO_EM_BRANCO) {
-				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_DEFINICAO_TECLADO;
+
+		try (BufferedReader br = new BufferedReader(new InputStreamReader(http.getInputStream(), "utf-8"))) {
+			StringBuilder response = new StringBuilder();
+			String responseLine = null;
+			while ((responseLine = br.readLine()) != null) {
+				response.append(responseLine.trim());
 			}
-			// SE ESTAMOS TRABALHANDO COM URNA E 1 LEITOR
-			if ((inner.Catraca) && (inner.Acionamento == Enumeradores.Acionamento_Catraca_Urna)) {
-				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIA_MSG_URNA;
-			}
-		} else if (inner.Acionamento == Enumeradores.Acionamento_Coletor) {
-			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ACIONAR_RELE1;
-		} else {
-			if (inner.Catraca) {
-				if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada) {
-					// HabilitarLadoCatraca
-					enableSideTurnstile("Entrada", inner.CatInvertida);
-					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
-				} else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Saida) {
-					enableSideTurnstile("Saida", inner.CatInvertida);
-					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
-				}
-				// ADICIONAMENTO SAIDA LIBERADA
-				else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Saida_Liberada) {
-					enableSideTurnstile("Entrada", inner.CatInvertida);
-					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
-				}
-				// ADICIONAMENTO ENTRADA LIBERADA
-				else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Entrada_Liberada) {
-					enableSideTurnstile("Saida", inner.CatInvertida);
-					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
-				}
-				// SE URNA E 2 LEITORES
-				else if (inner.Acionamento == Enumeradores.Acionamento_Catraca_Urna
-						&& inner.BilheteInner.Origem == Enumeradores.VIA_LEITOR2) {
-					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_VALIDA_URNA_CHEIA;
-				} else {
-					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
-				}
+
+			TicketGate ticketGateClass = gson.fromJson(response.toString(), TicketGate.class);
+
+			String res = ticketGateClass.getStatus();
+
+			switch (res) {
+			case "OK":
+				enableSideTurnstile("Entrada", inner.CatInvertida);
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_LIBERAR_CATRACA;
+				break;
+			case "FAIL":
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_MSG_ACESSO_NEGADO;
+				break;
+			default:
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
+				break;
 			}
 		}
+
+		http.disconnect();
 
 	}
 
@@ -502,7 +553,7 @@ public class Machine {
 	}
 
 	// PreencherBilheteDisplay
-	private void fillTicketDisplay(Inner inner) {
+	private void fillTicketDisplay(Inner inner) throws IOException {
 		String sBilheteDisplay = "";
 		sBilheteDisplay += "Marcacoes Online. Inner: " + inner.Numero + " Complemento:"
 				+ (inner.BilheteInner.Complemento);
@@ -534,14 +585,6 @@ public class Machine {
 			sBilheteDisplay += " Cartão: " + inner.BilheteInner.Cartao + "\r\n";
 		}
 
-		// ADICIONA BILHETE COLETADO NA LISTA		
-		sendQrCodeApi(inner.BilheteInner.Cartao);
-		
-	}
-
-	private void sendQrCodeApi(StringBuilder cartao) {
-		System.out.println(cartao);
-		
 	}
 
 	// MontarBilheteRecebido
@@ -614,7 +657,7 @@ public class Machine {
 			// DECLARAÇÃO DE VARIAVEIS
 			ret = Enumeradores.Limpar;
 			// ENVIAR COMANDO DEFININDO A MENSAGEM PADRÃO ONLINE PARA O INNER
-			ret = EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 1, "   Modo Online");
+			ret = EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 1, " Frameticket 5.0");
 			// TESTA O RETORNO DA MENSAGEM ENVIADA
 			if (ret == Enumeradores.RET_COMANDO_OK) {
 				// MUDA O PASSO PARA CONFIGURAÇÃO DE ENTRADA ONLINE
@@ -670,7 +713,7 @@ public class Machine {
 			// DEFINE MENSAGEM DE ALTERAÇÃO ONLINE -> OFFLINE
 			EasyInner.DefinirMensagemPadraoMudancaOffLine(1, " Modo OffLine");
 			// DEFINE MENSAGEM DE ALTERAÇÃO OFFILINE -> ONLINE
-			EasyInner.DefinirMensagemPadraoMudancaOnLine(1, "Modo Online");
+			EasyInner.DefinirMensagemPadraoMudancaOnLine(1, " Frameticket 5.0");
 			// ENVIA CONFIGURAÇÕES
 			ret = EasyInner.EnviarConfiguracoesMudancaAutomaticaOnLineOffLine(inner.Numero);
 

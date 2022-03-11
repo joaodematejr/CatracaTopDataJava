@@ -9,8 +9,8 @@ public class Init {
 		Request request = new Request();
 		String arch = System.getProperty("sun.arch.data.model");
 		if (arch.equalsIgnoreCase("32")) {
-			//machine.startMachine();
-			request.post();
+			machine.startMachine();
+			//request.post();
 		} else {
 			System.err.println("\nThis project only works on x86");
 		}

@@ -49,7 +49,7 @@ public class Request {
 
 			switch (res) {
 			case "OK":
-				System.out.println("Liberar a catraca");
+				System.out.println("Girar a catraca");
 				break;
 			case "FAIL":
 				System.out.println(ticketGateClass.getMsg());

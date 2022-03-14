@@ -5,12 +5,14 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.Reader;
 import java.net.HttpURLConnection;
 
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.sql.SQLException;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -29,12 +31,14 @@ import com.alquimidia.entity.Usuarios;
 import com.alquimidia.enumeradores.Enumeradores;
 import com.alquimidia.utils.EasyInnerUtils;
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.topdata.BioService;
 import com.topdata.EasyInner;
 
 public class Machine {
 	TicketGate ticketGate = new TicketGate();
 	Gson gson = new Gson();
+	Rlog log = new Rlog();
 	private HashMap<Integer, Inner> listInners;
 	private boolean stop;
 	Long initConnect;
@@ -43,6 +47,9 @@ public class Machine {
 	boolean releaseEntry = false;
 	// LIBERA ENTRADA INVERTIDA
 	boolean releaseInvertedEntry = false;
+
+	// FRAMETICKET
+	String tokenApp = "de775dc0998cc5efe65903252085dccd";
 
 	public Machine() {
 		listInners = new HashMap<Integer, Inner>();
@@ -54,7 +61,6 @@ public class Machine {
 	}
 
 	public void startMachine() throws InterruptedException, IOException {
-		Inner inner = new Inner();
 		Integer ret = 0;
 		EasyInner.FecharPortaComunicacao();
 		EasyInner.DefinirTipoConexao(2);
@@ -62,22 +68,18 @@ public class Machine {
 		if (ret == EasyInner.RET_COMANDO_OK) {
 			System.out.println("Porta Aberta");
 			// CONFIGURAÇÕES QUE PRECISAM CARREGAR DE UM ARQUIVO
-			inner.PadraoCartao = 1;
-			inner.Numero = 1;
-			inner.QtdDigitos = 14;
-			inner.TipoLeitor = 8;
-			inner.Porta = 3570;
-			inner.Acionamento = 8;
-			inner.TipoConexao = 2;
-			inner.EstadoTeclado = Enumeradores.EstadosTeclado.TECLADO_EM_BRANCO;
-			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
-			inner.DoisLeitores = true;
-			inner.Catraca = true;
-			inner.Biometrico = true;
-			inner.Teclado = true;
-			inner.Master = "0";
+			
 			// CONFIGURAÇÕES QUE PRECISAM CARREGAR DE UM ARQUIVO
-			addInner(inner);
+			Reader reader = Files.newBufferedReader(Paths.get("C:\\Alquimidia\\config.json"));
+			List<Inner> listInnerFiles = new Gson().fromJson(reader, new TypeToken<List<Inner>>() {}.getType());
+	
+			for (Inner tmpInner : listInnerFiles) {
+				tmpInner.EstadoTeclado = Enumeradores.EstadosTeclado.TECLADO_EM_BRANCO;
+				tmpInner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
+				addInner(tmpInner);
+			}
+			
+			reader.close();
 			machine();
 		} else {
 			System.err.println("\nErro ao tentar abrir a porta de comunicação.");
@@ -90,6 +92,7 @@ public class Machine {
 			for (Object objInner : listInners.values()) {
 				Inner inner = (Inner) objInner;
 				System.out.println("57 " + inner.EstadoAtual);
+				log.doLogging("" + inner.EstadoAtual);
 				switch (inner.EstadoAtual) {
 				// PASSO_ESTADO_CONECTAR
 				case ESTADO_CONECTAR:
@@ -179,12 +182,119 @@ public class Machine {
 				case ESTADO_LIBERAR_CATRACA:
 					STEP_STATUS_RELEASES_RATCHET(inner);
 					break;
+				// ESTADO_MONITORA_GIRO_CATRACA
+				case ESTADO_MONITORA_GIRO_CATRACA:
+					STEP_STATUS_MONITOR_RATCHET_TURN(inner);
+					break;
 				default:
 					break;
 				}
 			}
 			Thread.sleep(1);
 		}
+	}
+
+	// PASSO_ESTADO_MONITORA_GIRO_CATRACA
+	private void STEP_STATUS_MONITOR_RATCHET_TURN(Inner inner) {
+		try {
+			Integer ret = 0;
+			int[] ticket = new int[8];
+			StringBuffer card;
+			card = new StringBuffer();
+			// EXIBE ESTADO DO ESTADO_MONITORA_GIRO_CATRACA
+			System.out.println("Monitorando Giro de Catraca!");
+			// EXIBE ESTADO DO INNER NO RODAPÉ DA JANELA
+			System.out.println("Inner " + inner.Numero + " Monitora Giro da Catraca...");
+			// MONITOR O GIRO DA CATRACA
+			ret = EasyInner.ReceberDadosOnLine(inner.Numero, ticket, card);
+			// TESTA O RETORNO DO COMANDO
+			if (ret == Enumeradores.RET_COMANDO_OK) {
+				// TESTA SE GIROU OU NÁO A CATRACA
+				if (ticket[0] == Enumeradores.FIM_TEMPO_ACIONAMENTO) {
+					System.out.println("Não girou a catraca");
+				} else if (ticket[0] == Enumeradores.GIRO_DA_CATRACA_TOPDATA) {
+					if (inner.CatInvertida) {
+						if (Integer.parseInt(String.valueOf(ticket[1])) == 0) {
+							System.out.println("Girou a catraca para saida.");
+						} else {
+							System.out.println("Girou a catraca para entrada.");
+							ticketVoucher(inner);
+						}
+					} else {
+						if (Integer.parseInt(String.valueOf(ticket[1])) == 0) {
+							System.out.println("Girou a catraca para entrada.");
+							ticketVoucher(inner);
+						} else {
+							System.out.println("Girou a catraca para saida.");
+						}
+					}
+				}
+				// VAI PARA O ESTADO DE ENVIO DE MENSAGEM PADRAO
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_ENVIAR_MSG_PADRAO;
+			} else {
+				// CASO O TEMPO QUE ESTIVER MONITORANDO O GIRO CHEGUE A 3 SEGUNDOS
+				// DEVERA ENVIAR O PING ON LINE PARA MANTER O EQUIPAMENTO EM MODO ON LINE
+				long tempo = (System.currentTimeMillis() - inner.TempoInicialPingOnLine);
+				if (tempo >= 3000) {
+					inner.EstadoSolicitacaoPingOnLine = inner.EstadoAtual;
+					inner.CountTentativasEnvioComando = 0;
+					inner.TempoInicialPingOnLine = System.currentTimeMillis();
+					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_PING_ONLINE;
+				}
+			}
+
+		} catch (Exception e) {
+			log.doLogging(e.getMessage());
+			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
+		}
+
+	}
+
+	private void ticketVoucher(Inner inner) throws IOException {
+		ticketGate.setId_catraca(String.valueOf(inner.Numero));
+
+		URL url = new URL(inner.EndPoint + "/catraca/valida-ticket/" + inner.BilheteInner.Cartao);
+		HttpURLConnection http = (HttpURLConnection) url.openConnection();
+		http.setRequestMethod("POST");
+		http.setDoOutput(true);
+		http.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+		http.setRequestProperty("Accept", "application/json");
+		http.setRequestProperty("ft-tokenapp", tokenApp);
+		http.setRequestProperty("ft-appclient", inner.AppClient);
+
+		String req = gson.toJson(ticketGate);
+
+		try (OutputStream os = http.getOutputStream()) {
+			byte[] input = req.getBytes("utf-8");
+			os.write(input, 0, input.length);
+		}
+
+		try (BufferedReader br = new BufferedReader(new InputStreamReader(http.getInputStream(), "utf-8"))) {
+			StringBuilder response = new StringBuilder();
+			String responseLine = null;
+			while ((responseLine = br.readLine()) != null) {
+				response.append(responseLine.trim());
+			}
+
+			TicketGate ticketGateClass = gson.fromJson(response.toString(), TicketGate.class);
+
+			String res = ticketGateClass.getStatus();
+
+			switch (res) {
+			case "OK":
+				EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 0, "                INGRESSO OK");
+				break;
+			case "FAIL":
+				EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 0, "                INGRESSO UTILIZADO");
+				break;
+			default:
+				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
+				break;
+			}
+		}
+
+		http.disconnect();
+
 	}
 
 	// PASSO_ESTADO_LIBERA_GIRO_CATRACA
@@ -213,7 +323,8 @@ public class Machine {
 				inner.TempoInicialPingOnLine = (int) System.currentTimeMillis();
 				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_MONITORA_GIRO_CATRACA;
 			} else {
-				//SE O RETORNO FOR DIFERENTE DE 0 TENTA LIBERAR A CATRACA 3 VEZES, CASO NÃO CONSIGA ENVIAR O COMANDO VOLTA PARA O PASSO RECONECTAR
+				// SE O RETORNO FOR DIFERENTE DE 0 TENTA LIBERAR A CATRACA 3 VEZES, CASO NÃO
+				// CONSIGA ENVIAR O COMANDO VOLTA PARA O PASSO RECONECTAR
 				if (inner.CountTentativasEnvioComando >= 3) {
 					inner.CountTentativasEnvioComando = 0;
 					inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
@@ -221,6 +332,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -237,6 +349,7 @@ public class Machine {
 				EasyInner.DesligarLedVermelho(inner.Numero);
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -248,7 +361,7 @@ public class Machine {
 			System.out.println("Inner " + inner.Numero + " Enviar mensagem acesso negado...");
 			// TESTA O RETORNO DO COMANDO DE ENVIO DE MENSAGEM PADRAO ONLINE
 			if (EasyInner.EnviarMensagemPadraoOnLine(inner.Numero, 0,
-					" Acesso Negado!  NAO CADASTRADO \r\n") == Enumeradores.RET_COMANDO_OK) {
+					" Acesso Negado!  NAO AUTORIZADO \r\n") == Enumeradores.RET_COMANDO_OK) {
 				inner.TempoInicialMensagem = System.currentTimeMillis();
 				EasyInner.AcionarBipLongo(inner.Numero);
 				// if (inner.InnerNetAcesso) {
@@ -268,6 +381,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -280,19 +394,18 @@ public class Machine {
 		// E CARTAO = PROXIMIDADE
 		System.out.println("Inner " + inner.Numero + " Validar Acesso...");
 
-		String codTicket = "260551405";
+		// String codTicket = "260551405";
 
-		String innerCatraca = "1";
-		ticketGate.setId_catraca(innerCatraca);
+		ticketGate.setId_catraca(String.valueOf(inner.Numero));
 
-		URL url = new URL("https://api.parques.frameticket.com.br/5.0/catraca/consulta-ticket/" + codTicket);
+		URL url = new URL(inner.EndPoint + "/catraca/consulta-ticket/" + inner.BilheteInner.Cartao);
 		HttpURLConnection http = (HttpURLConnection) url.openConnection();
 		http.setRequestMethod("POST");
 		http.setDoOutput(true);
 		http.setRequestProperty("Content-Type", "application/json; charset=utf-8");
 		http.setRequestProperty("Accept", "application/json");
-		http.setRequestProperty("ft-tokenapp", "#");
-		http.setRequestProperty("ft-appclient", "#");
+		http.setRequestProperty("ft-tokenapp", tokenApp);
+		http.setRequestProperty("ft-appclient", inner.AppClient);
 
 		String req = gson.toJson(ticketGate);
 
@@ -356,46 +469,6 @@ public class Machine {
 
 	}
 
-	// LiberaAcesso
-	private boolean releaseAccess(String numCartao) {
-		try {
-			List<Usuarios> listcard = new ArrayList();
-			Usuarios user1 = new Usuarios();
-			user1.setCodigoUsuario(1);
-			user1.setUsuario("201874550596");
-			user1.setFaixa(101);
-
-			// CARTÃO PARA TESTE
-			Usuarios user2 = new Usuarios();
-			user2.setCodigoUsuario(2);
-			user2.setUsuario("ENGENHARIASW");
-			user2.setFaixa(101);
-
-			listcard.add(user1);
-			listcard.add(user2);
-
-			boolean ret = false;
-			// DESCOBRIR SE O CARTAO ESTA INCLUIDO NO LIST-OFFLINE, PODE SER LISTA ONLINE
-			// TAMBEM
-			for (int i = 0; i < listcard.size(); i++) {
-				String slCartaoSZero = EasyInnerUtils.remZeroEsquerda(listcard.get(i).getUsuario());
-				if (slCartaoSZero.equals(numCartao.trim())) {
-					// if(listaCartao.get(i).getFaixa()==101)
-					// {
-					ret = true;
-					break;
-					/*
-					 * } else { ret = false; break; }
-					 */
-				}
-			}
-			return ret;
-		} catch (Exception e) {
-			return false;
-		}
-
-	}
-
 	// PASSO_ESTADO_ENVIA_PING_ONLINE
 	private void STEP_STATE_SEND_PING_ONLINE(Inner inner) {
 		try {
@@ -416,6 +489,7 @@ public class Machine {
 			}
 			inner.TempoInicialPingOnLine = System.currentTimeMillis();
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			System.out.println(e);
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
 		}
@@ -444,8 +518,6 @@ public class Machine {
 		int[] ticket = new int[8];
 		StringBuffer card;
 		Integer nTicket;
-		Integer i = Enumeradores.Limpar;
-		int receber[] = new int[2];
 		int ret = 0;
 		System.out.println("Inner " + inner.Numero + " Coletar bilhete Inner acesso...");
 		// VERIFICA CONEXAO
@@ -546,6 +618,7 @@ public class Machine {
 				}
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			System.err.println(e);
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
@@ -554,35 +627,10 @@ public class Machine {
 
 	// PreencherBilheteDisplay
 	private void fillTicketDisplay(Inner inner) throws IOException {
-		String sBilheteDisplay = "";
-		sBilheteDisplay += "Marcacoes Online. Inner: " + inner.Numero + " Complemento:"
-				+ (inner.BilheteInner.Complemento);
 		// SE QUANTIDADE DE DIGITO INFORMADO FOR MAIOR QUE 14 NÃO DEVE MOSTRAR DATA E
 		// HORARIO
 		if (inner.QtdDigitos <= 14) {
-			sBilheteDisplay += " Data:"
-					+ (String.valueOf(inner.BilheteInner.Dia).length() == 1
-							? "0" + String.valueOf(inner.BilheteInner.Dia)
-							: String.valueOf(inner.BilheteInner.Dia))
-					+ "/"
-					+ (String.valueOf(inner.BilheteInner.Mes).length() == 1
-							? "0" + String.valueOf(inner.BilheteInner.Mes)
-							: String.valueOf(inner.BilheteInner.Mes))
-					+ "/" + String.valueOf(inner.BilheteInner.Ano) + " Hora:"
-					+ (String.valueOf(inner.BilheteInner.Hora).length() == 1
-							? "0" + String.valueOf(inner.BilheteInner.Hora)
-							: String.valueOf(inner.BilheteInner.Hora))
-					+ ":"
-					+ (String.valueOf(inner.BilheteInner.Minuto).length() == 1
-							? "0" + String.valueOf(inner.BilheteInner.Minuto)
-							: String.valueOf(inner.BilheteInner.Minuto))
-					+ ":"
-					+ (String.valueOf(inner.BilheteInner.Segundo).length() == 1
-							? "0" + String.valueOf(inner.BilheteInner.Segundo)
-							: String.valueOf(inner.BilheteInner.Segundo))
-					+ " " + " Cartão: " + inner.BilheteInner.Cartao + "\n";
 		} else {
-			sBilheteDisplay += " Cartão: " + inner.BilheteInner.Cartao + "\r\n";
 		}
 
 	}
@@ -603,8 +651,6 @@ public class Machine {
 			// PADRAO TOPDATA --> CARTAO TOP DATA DEVE SER SEMPRE 14 DIGITOS
 			sNumCartao = Long.toString(Long.parseLong(sTicketReceived.substring(0, tam)));
 			sNumCartao = sNumCartao.substring(13, 14) + "" + sNumCartao.substring(4, 8);
-			// GRAVANDO NO INNER O NUMERO DO CARTAO FORMATADO
-			StringBuilder sbAux = new StringBuilder(sNumCartao);
 			inner.BilheteInner.Cartao.delete(0, inner.BilheteInner.Cartao.length());
 			inner.BilheteInner.Cartao = new StringBuilder(sNumCartao);
 		} else {
@@ -643,6 +689,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -673,6 +720,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -729,6 +777,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -818,6 +867,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -858,6 +908,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -893,6 +944,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
 
@@ -950,6 +1002,7 @@ public class Machine {
 				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			System.out.println(e);
 		}
 
@@ -962,6 +1015,7 @@ public class Machine {
 		try {
 			USersSD = AcessoBio.ConsultarUsuarioSemDigital();
 		} catch (SQLException ex) {
+			log.doLogging(ex.getMessage());
 			Logger.getLogger(Machine.class.getName()).log(Level.SEVERE, null, ex);
 		}
 		for (UsuarioSemDigital s : USersSD) {
@@ -1005,6 +1059,7 @@ public class Machine {
 				inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
 			}
 		} catch (IOException | ClassNotFoundException | SQLException ex) {
+			log.doLogging(ex.getMessage());
 			System.out.println("ex" + ex);
 		}
 
@@ -1030,19 +1085,14 @@ public class Machine {
 				EasyInner.InserirUsuarioListaAcesso(listcard.get(i).getUsuario(), 101);
 			}
 		} catch (IOException | SQLException | ClassNotFoundException e) {
+			log.doLogging(e.getMessage());
 			System.out.println(e);
 		}
 
 	}
 
 	private void setSchedules() throws IOException, FileNotFoundException, ClassNotFoundException, SQLException {
-		// INSERE NO BUFFER DA DLL HORARIO DE ACESSO
-		byte bTime;
-		byte bDay;
-		byte bRange;
-		byte bHour;
-		byte bMin;
-
+		@SuppressWarnings("unchecked")
 		List<Horarios> ListTimes = Horarios.MontarListaHorarios();
 
 		for (int index = 0; index < ListTimes.size(); index++) {
@@ -1078,6 +1128,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			System.out.println("120" + e.getMessage());
 		}
 
@@ -1251,6 +1302,7 @@ public class Machine {
 			}
 
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			System.out.println("133" + e.getMessage());
 		}
 	}
@@ -1467,6 +1519,7 @@ public class Machine {
 			inner.CountRepeatPingOnline = 0;
 
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			System.out.println("Passo Reconectar :  " + e);
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_CONECTAR;
 		}
@@ -1499,6 +1552,7 @@ public class Machine {
 				inner.CountTentativasEnvioComando++;
 			}
 		} catch (Exception e) {
+			log.doLogging(e.getMessage());
 			inner.EstadoAtual = Enumeradores.EstadosInner.ESTADO_RECONECTAR;
 		}
 		System.out.println(initConnect);

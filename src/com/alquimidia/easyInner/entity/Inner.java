@@ -67,4 +67,8 @@ public class Inner {
 		BilheteInner = new Bilhete();
 		VersaoFW = new VersaoFirware();
 	}
+	
+	//FRAMETICKER:
+	public String AppClient;
+	public String EndPoint;
 }

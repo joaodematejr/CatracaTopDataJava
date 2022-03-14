@@ -1,0 +1,37 @@
+[{
+        "PadraoCartao": 1,
+        "Numero": 1,
+        "QtdDigitos": 14,
+        "TipoLeitor": 8,
+        "Porta": 3570,
+        "Acionamento": 8,
+        "TipoConexao": 2,
+        "DoisLeitores": true,
+        "Catraca": true,
+        "Biometrico": true,
+        "Teclado": true,
+        "Master": "0",
+        "EstadoTeclado": "TECLADO_EM_BRANCO",
+        "EstadoAtual": "ESTADO_CONECTAR",
+        "AppClient": "bla bla bla",
+        "EndPoint": "https://api.bla.bla.bla/666"
+    },
+    {
+        "PadraoCartao": 1,
+        "Numero": 2,
+        "QtdDigitos": 14,
+        "TipoLeitor": 8,
+        "Porta": 3571,
+        "Acionamento": 8,
+        "TipoConexao": 2,
+        "DoisLeitores": true,
+        "Catraca": true,
+        "Biometrico": true,
+        "Teclado": true,
+        "Master": "0",
+        "EstadoTeclado": "TECLADO_EM_BRANCO",
+        "EstadoAtual": "ESTADO_CONECTAR",
+        "AppClient": "bla bla bla",
+        "EndPoint": "https://api.bla.bla.bla/666"
+    }
+]
